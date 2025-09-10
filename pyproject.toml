@@ -1,0 +1,23 @@
+[project]
+name = "gtd-poc"
+version = "0.1.0"
+description = ""
+authors = [
+    {name = "Tunyi Chang",email = "tyc31316@gmail.com"}
+]
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "uvicorn (>=0.35.0,<0.36.0)",
+    "fastapi (>=0.116.1,<0.117.0)",
+    "pydantic (>=2.11.7,<3.0.0)",
+    "langchain-openai (>=0.3.32,<0.4.0)"
+]
+
+[tool.poetry]
+packages = [{include = "gtd_poc", from = "src"}]
+
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
