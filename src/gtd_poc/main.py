@@ -1,5 +1,6 @@
 from fastapi import FastAPI
 from pydantic import BaseModel
+from src.gtd_poc.agents import graph
 import logging
 
 app = FastAPI()
@@ -13,8 +14,8 @@ def read_root():
 
 @app.post("/add")
 def collect(stuff: Stuff):
-    logging.info(f"Adding thread of thoughts: {stuff.description}")
+    response = graph.invoke({"messages": stuff.description})
     return {
         "descritipn": stuff.description,
-        "category": "Next Action"
+        "response": response
     }
