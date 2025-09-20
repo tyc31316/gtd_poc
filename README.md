@@ -1,5 +1,5 @@
 ### Build
-`poetry lock`
+`poetry install`
 
 ### Run
 `uvicorn src.gtd_poc.main:app`
