@@ -7,5 +7,3 @@
 `poetry install`
 4. Run the app
 `uvicorn src.gtd_poc.main:app --reload`
-
-### Debug with
