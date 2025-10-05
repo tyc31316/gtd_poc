@@ -1,6 +1,5 @@
 dist/
 __pycache__/
 .env
-.vscode/
 .venv/
 gtd_database.db
