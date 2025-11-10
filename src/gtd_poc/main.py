@@ -16,11 +16,8 @@ class Stuff(BaseModel):
 @app.post("/add")
 async def collect(stuff: Stuff):
     logging.info("adding new task")
-    response = await graph.ainvoke({"messages": stuff.description})
-    return {
-        "descritipn": stuff.description,
-        "response": response
-    }
+    response = await graph.ainvoke({"user_input": stuff.description})
+    return response
     
 @app.get("/next-action-list")
 def next_action_list():

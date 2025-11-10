@@ -1,157 +1,176 @@
-from langgraph.prebuilt import create_react_agent
-from langgraph.types import Command
-from langgraph.graph import StateGraph, MessagesState, START, END
-from typing import Literal
+import json
+from langgraph.graph import StateGraph, START, END
+from typing import  TypedDict
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from src.gtd_poc.db import get_connection
-import logging
+from enum import StrEnum
+from langgraph.graph import MessagesState
 
-async def clarifier_agent(state: MessagesState) -> Command[Literal["actions_generator_agent", END]]:
-    logging.info(f"[clarifying]: {state.get('messages')}")
-
-    prompt = SystemMessage(
-        content="""
-            You are a Task Classifier.
-            The user will enter an idea, task, or todo item.
-            You must determine whether this "stuff" is actionable or non-actionable.
-            Respond with a single word: either "actionable" or "non-actionable" — and nothing else.
-        """
-    )
+class GTDCategory(StrEnum):
+    DO_NOW = 'DO_NOW'
+    NEXT_ACTION_LIST = 'NEXT_ACTION_LIST'
+    DELEGATE = 'DELEGATE'
+    CALENDAR = 'CALENDAR'
+    WAITING_FOR = 'WAITING_FOR'
+    SOMEDAY_MAYBE = 'SOMEDAY_MAYBE'
     
-    llm = ChatOpenAI(
+class Action:
+    id: int
+    description: str
+    context: list[str]
+    time_minutes: list[int]
+    category: GTDCategory
+
+class GTDState(MessagesState):
+    user_input: str
+    is_project: bool
+    project_name: str
+    project_description: str
+    next_action_list: list[Action]
+    
+llm = ChatOpenAI(
         model="gpt-4o-mini",
     )
 
-    try:
-        response = await llm.ainvoke([prompt] + state.get("messages"))
-        if(response.content.strip().lower() == "actionable"):
-            return Command(
-                goto="actions_generator_agent"   
-            )
-        else:
-            return Command(
-                goto=END
-            )
-    except Exception as e:
-        logging.error(f"[clarifier] error calling llm: {e}")
-        return Command(
-            goto=END,
-            update={"messages": [f"[clarifier] error calling llm: {e}"]}
-        )
+async def is_project(state: GTDState):
+    prompt = SystemMessage(
+        content=
+        """
+            You are a GTD classifier that determines whether an input represents a "project" or a "single-step action".
 
-async def actions_generator_agent(state: MessagesState) -> Command[Literal["organizer_agent"]]:
+            Definitions:
+            - A **project** is any desired outcome that requires two or more physical, visible actions to complete.
+            - A **non-project** (single action) is something that can be completed in one physical step.
+
+            Instructions:
+            1. Read the user's input (which may be an idea, task, or to-do item).
+            2. Apply the GTD definition above.
+            3. If the input represents a project:
+                - Set "is_project" to true.
+                - Generate a concise, outcome-oriented project name (e.g., "Launch new website", "Organize summer trip").
+                - The project name should describe the *final desired result*, not the next action.
+            4. If the input is a single-step action:
+                - Set "is_project" to false.
+            5. Respond **only** in valid JSON format using one of these exact schemas:
+                - For projects:
+                    ```json
+                    {"is_project": true, "project_name": "some project name"}
+                    ```
+                - For non-projects:
+                    ```json
+                    {"is_project": false}
+                    ```
+            6. Use lowercase true/false (not strings).
+            7. Do **not** include any explanations, comments, or text outside the JSON.
+        """
+    )
+
+    response = await llm.ainvoke([prompt] + [HumanMessage(content = state.get("user_input"))])
+    return json.loads(response.content)
+
+async def actions_generator_agent(state: GTDState):
+    
+    prompt = SystemMessage(
+        content=
+        """
+            You are a GTD Next Action Generator.
+
+            Your task is to determine the *physical, concrete, and immediately executable next action(s)* for the given task or project, following the principles of Getting Things Done (GTD).
+
+            Guidelines:
+            1. Focus only on **actions that can be done directly** — not vague or planning tasks.
+                - ✅ "Email Sarah to confirm the meeting time"
+                - ❌ "Plan the meeting"
+            2. Each action must describe a **visible physical behavior** that can typically be done in one sitting.
+            3. If multiple next actions can be performed in parallel, list them all.
+            4. For each action, provide:
+                - `"description"` — a concise, physical next step
+                - `"context"` — short tags describing the situation, tools, or environment needed (e.g. `"computer"`, `"phone"`, `"office"`, `"home"`, `"errand"`, `"anywhere"`)
+                - `"time_minutes"` — approximate number of minutes required to complete (integer estimate)
+            5. Respond **only** in valid JSON format: an array of objects with these three fields.
+            6. Do **not** include any explanations, text, or comments outside the JSON.
+
+            Example response:
+            [
+            {
+                "description": "Contact Kevin to schedule a discussion time",
+                "context": ["computer", "email"],
+                "time_minutes": 5
+            },
+            {
+                "description": "Brainstorm possible ideas for the proposal",
+                "context": ["office", "thinking"],
+                "time_minutes": 20
+            }
+            ]
+        """
+    )
+
+    response = await llm.ainvoke([prompt] + [HumanMessage(content=state.get('user_input'))])
+    # action_list = []
+    
+    # for index, action in json.loads(response.content):
+    #     action_list.append(Action(index, action["description"], "project_id"))
+    
+    return {"next_action_list": json.loads(response.content)}
+
+async def action_organizer(state: GTDState):
     prompt = SystemMessage(
         content="""
-            You are a Next Action Generator.
-            Given a task, produce an ordered, step-by-step list of concrete next actions that will successfully conclude the task. 
-            Each action should be small, specific, and directly executable.
-            Respond in the format of a JSON array of strings.
+            You are a GTD Action Categorizer.
+            Your task is to categorize each next action into the appropriate GTD list or bucket, based on its nature, urgency, and required context.
 
-            For example: ["Write down initial ideas and brainstorm", "Make an appointment with Kevin to discuss", "Create a proposal"]
+            You will receive one or more actions, each containing:
+                - "description": what the action is
+                - "context": where or how it can be done (e.g., ["computer", "phone", "office"])
+                - "time_minutes": estimated time needed to complete it
+
+            You must assign each action to exactly one of the following GTD categories:
+            1. "DO_NOW" — Actions that take less than 2 minutes, or are so quick it’s better to do them immediately.
+            2. "CALENDAR" — Actions that must be done at a specific time or date (e.g., meetings, appointments, deadlines).
+            3. "DELEGATE" — Actions that should be handed off to someone else to complete.
+            4. "WAITING_FOR" — Actions that are currently blocked because you’re waiting on someone or something.
+            5. "NEXT_ACTION_LIST" — Actions that you will do soon, but not immediately; they remain available by context for future execution.
+            6. "SOMEDAY_MAYBE" — Actions or ideas you might want to consider later but not commit to now.
+
+            Rules:
+            - Always output a valid JSON array.
+            - Each item in the array must include the fields:
+                - "description"
+                - "context"
+                - "time_minutes"
+                - "category"
+            - Preserve the original fields as given.
+            - Do **not** include any explanation, reasoning, or text outside the JSON.
+
+            Example input:
+            [
+                {"description": "Email Sarah to confirm meeting time", "context": ["computer", "email"], "time_minutes": 3},
+                {"description": "Prepare slides for Monday’s client presentation", "context": ["computer", "office"], "time_minutes": 90}
+            ]
+
+            Example response:
+            [
+                {"description": "Email Sarah to confirm meeting time", "context": ["computer", "email"], "time_minutes": 3, "category": "DO_NOW"},
+                {"description": "Prepare slides for Monday’s client presentation", "context": ["computer", "office"], "time_minutes": 90, "category": "CALENDAR"}
+            ]
         """
     )
     
-    llm = ChatOpenAI(
-        model="gpt-4o-mini"
-    )
-
-    try:
-        response = await llm.ainvoke([prompt] + [state.get("messages")[-1]])
-        return Command(
-            goto="organizer_agent",
-            update={"messages": [response]}
-        )
-    except Exception as e:
-        logging.error(f"[action generator] error calling llm: {e}")
-        return Command(
-            goto=END,
-            update={"messages": f"[action generator] error calling llm: {e}"}
-        )
-
-def organizer_agent(state: MessagesState) -> Command[Literal[END]]:
-    conn = get_connection()
-    cursor = conn.cursor()
-    prompt = SystemMessage(
-        content="""
-            You are a Organzaier agent.
-            Given a task, classify it into one of: "do", "calendar", "defer", or "delegate".
-            - "do": if it can be done in under 2 minutes.
-            - "calendar": if the task must be done by themselves at a specific time.
-            - "defer": if the task must be done by themselves, but not at a specific time.
-            - "delegate": if someone else should do it.
-            Respond ONLY with the single word.
-        """
-    )
-    
-    llm = ChatOpenAI(
-        model="gpt-4o-mini"
-    )
-    try:
-        import json
-        actions = []
-        content = state.get("messages")[-1].content
-        decision: str
-        try:
-            actions = json.loads(content.strip("```json").strip("```"))
-            if(len(actions) > 0):
-                decision = llm.invoke([prompt] + [AIMessage(content=actions[0])]).content
-                
-            if len(actions) == 1:
-                cursor.execute("INSERT INTO next_actions (description) VALUES (?)", [actions[0]])
-                
-            elif len(actions) > 1:
-                project_name= next(msg.content for msg in state["messages"] if isinstance(msg, HumanMessage))
-                cursor.execute("INSERT INTO projects (description) VALUES (?)", [project_name])
-                project_id = cursor.lastrowid
-                for action in actions:
-                    cursor.execute("INSERT INTO next_actions (description, project_id) VALUES (?, ?)", (action, project_id))
-
-                
-            if(decision == "do"):
-                return Command(
-                    goto=END,
-                    update={"messages": [AIMessage(content=f"Do it now: {actions[0]}")]}
-                )
-            elif(decision == "calendar"):
-                return Command(
-                    goto=END,
-                    update={"messages": [AIMessage(content=f"Put it on calendar: {actions[0]}")]}
-                )
-            elif(decision == "defer"):
-                return Command(
-                    goto=END,
-                    update={"messages": [AIMessage(content=f"Added to next action list: {actions[0]}")]}
-                )
-            elif(decision == "delegate"):
-                return Command(
-                    goto=END,
-                    update={"messages": [AIMessage(content=f"Someone else needs to to it: {actions[0]}")]}
-                )
-            
-                
-            cursor.execute("INSERT INTO items_pending_review (description) VALUES (?)", [actions])
-            return Command(
-                goto=END,
-                update={"messages": [AIMessage(content=f"Added to Pending Review: {actions}")]}
-            )
-                
-        except Exception:
-            cursor.execute("INSERT INTO items_pending_review (description) VALUES (?)", [content])
-            return Command(
-                goto=END,
-                update={"messages": [AIMessage(content=f"Added to Pending Review: {actions}")]}
-            )
-            
-    finally:
-        conn.commit()
-        cursor.close()
-        conn.close()
+    response = await llm.ainvoke([prompt] + [AIMessage(content = json.dumps(state.get("next_action_list")))])
+   
+    return {"next_action_list": json.loads(response.content)}
 
 
-builder = StateGraph(MessagesState)
-builder.add_node(clarifier_agent)
+builder = StateGraph(GTDState)
+builder.add_node(is_project)
 builder.add_node(actions_generator_agent)
-builder.add_node(organizer_agent)
-builder.add_edge(START, "clarifier_agent")
+builder.add_node(action_organizer)
+
+builder.add_edge(START, "is_project")
+builder.add_edge(START, "actions_generator_agent")
+builder.add_edge('is_project', 'action_organizer')
+builder.add_edge('actions_generator_agent', 'action_organizer')
+builder.add_edge('action_organizer', END)
 graph = builder.compile()

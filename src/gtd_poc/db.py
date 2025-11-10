@@ -1,5 +1,7 @@
 import sqlite3
 from fastapi import HTTPException
+from src.gtd_poc.agents import Action
+
 
 def get_connection():
     return sqlite3.connect("gtd_database.db")
@@ -10,23 +12,56 @@ def init_database():
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS projects (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
         description TEXT NOT NULL
     )
     """)
     cursor.execute("""
-    CREATE TABLE IF NOT EXISTS next_actions (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
+    CREATE TABLE IF NOT EXISTS next_action_list (
+        id INTEGER PRIMARY KEY,
         description TEXT NOT NULL,
-        project_id INTEGER REFERENCES projects(id)
+        context TEXT,
+        time_minutes TEXT,
+        category TEXT NOT NULL
     )
     """)
 
+    # cursor.execute("""
+    # CREATE TABLE IF NOT EXISTS items_pending_review (
+    #     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    #     description TEXT NOT NULL
+    # )
+    # """)
+    conn.commit()
+    cursor.close()
+    conn.close()
+    
+def add_next_action(action: Action):
+    conn = get_connection()
+    cursor = conn.cursor()
     cursor.execute("""
-    CREATE TABLE IF NOT EXISTS items_pending_review (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        description TEXT NOT NULL
-    )
-    """)
+    INSERT INTO next_action_list (description, context, time_minutes, category)
+    VALUES (?, ?, ?, ?)
+    """, (
+        action.description,
+        action.context,
+        action.time_minutes,
+        action.category
+    ))
+    conn.commit()
+    cursor.close()
+    conn.close()
+    
+def create_project(project_name: str, project_description: str):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+    INSERT INTO projects (name, description)
+    VALUES (?, ?)
+    """, (
+        project_name,
+        project_description
+    ))
     conn.commit()
     cursor.close()
     conn.close()
